@@ -35,23 +35,24 @@ venv = DummyVecEnv([make_env])
 model = PPO(
     "CnnPolicy",
     venv,
-    learning_rate=3e-4,
-    n_steps=2048,
-    batch_size=64,
-    n_epochs=10,
+    learning_rate=2e-4, # went from 3e to 1e for smoother training
+    n_steps=2048, # want to run 4096 if possible
+    batch_size=256, # increased from 64 to 256 for CNN stability
+    n_epochs=5, # reduced from 10 to 5 bc training was a bit unstable
     gamma=0.99,
     gae_lambda=0.95,
-    clip_range=0.2,
-    ent_coef=0.01,
+    clip_range=0.1, # from 0.2 -> 0.1 for smaller clip for image input
+    ent_coef=0.001, # lower to avoid over-exploration bc it's CNN
     vf_coef=0.5,
     max_grad_norm=0.5,
     verbose=1,
-    tensorboard_log="./logs/highway_grayscale/"
+    tensorboard_log="./logs/highway_grayscale/",
+    device="cuda" # use GPU
 )
 
 # Train the model
 print("Starting training...")
-model.learn(total_timesteps=3000, tb_log_name="run_highway_grayscale")
+model.learn(total_timesteps=200000, tb_log_name="run_highway_grayscale")
 model.save("ppo_highway_grayscale")
 
 print("Training done, model saved as 'highway_grayscale'")
@@ -80,7 +81,7 @@ def plot_learning_curve(log_path, label="PPO"):
 plot_learning_curve("./logs/monitor.csv")
 
 # evaluate over 500 episodes
-def evaluate_agent(model, make_env_fn, episodes=500):
+def evaluate_agent(model, make_env_fn, episodes=200):
     returns = []
     env = make_env_fn()
 
