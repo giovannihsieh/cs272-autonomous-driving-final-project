@@ -5,11 +5,21 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 from stable_baselines3.common.evaluation import evaluate_policy
-import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import csv
+import os
+
+SAVE_DIR = "./highway_models"
+LOG_DIR = "./highway_logs"
+
+os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+
+import os
+os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
 
 config = {
     "observation": {
@@ -23,13 +33,30 @@ config = {
 }
 
 def make_env():
-    os.makedirs("logs", exist_ok=True)
-    env = gym.make("highway-v0", config=config, render_mode = None)
-    env = Monitor(env, filename="logs/monitor.csv")  # write file explicitly
+    env = gym.make("highway-v0", config=config, render_mode=None)
+    env = Monitor(env, filename=f"{LOG_DIR}/monitor.csv")
     return env
 
 # PPO needs a VecEnv
 venv = DummyVecEnv([make_env])
+
+# checkpoints to save model
+checkpoint_callback = CheckpointCallback(
+    save_freq=20_000, # save every 20k steps
+    save_path=SAVE_DIR,
+    name_prefix="ppo_checkpoint"
+)
+
+# keep the best model
+eval_env = DummyVecEnv([make_env])
+eval_callback = EvalCallback(
+    eval_env,
+    best_model_save_path=SAVE_DIR,
+    log_path=LOG_DIR,
+    eval_freq=25_000, # evaluate best model every 25k steps
+    deterministic=True,
+    render=False
+)
 
 # Create PPO model with cnnpolicy for image observations
 model = PPO(
@@ -46,23 +73,26 @@ model = PPO(
     vf_coef=0.5,
     max_grad_norm=0.5,
     verbose=1,
-    tensorboard_log="./logs/highway_grayscale/",
-    device="cuda" # use GPU
+    tensorboard_log=f"{LOG_DIR}/tb/"
 )
 
 # Train the model
 print("Starting training...")
-model.learn(total_timesteps=200000, tb_log_name="run_highway_grayscale")
-model.save("ppo_highway_grayscale")
+model.learn(
+    total_timesteps=200_000,
+    tb_log_name="run_highway_grayscale",
+    callback=[checkpoint_callback, eval_callback]
+)
 
-print("Training done, model saved as 'highway_grayscale'")
+# save final model
+final_path = f"{SAVE_DIR}/ppo_highway_grayscale_final"
+model.save(final_path)
+print(f"Training done. Model saved to: {final_path}")
 
 def plot_learning_curve(log_path, label="PPO"):
-    # monitor.csv created by Monitor wrapper
-    df = pd.read_csv(log_path, skiprows=1)   # Skip header comment line
+    df = pd.read_csv(log_path, skiprows=1)   # Skip header comment
     rewards = df["r"].values
 
-    # Smooth rewards (moving average)
     window = 20
     smoothed = pd.Series(rewards).rolling(window).mean()
 
@@ -76,12 +106,17 @@ def plot_learning_curve(log_path, label="PPO"):
     plt.grid()
     plt.show()
 
-
 # Plot learning curve
-plot_learning_curve("./logs/monitor.csv")
+plot_learning_curve(f"{LOG_DIR}/monitor.csv")
+
+from stable_baselines3 import PPO
+# final model
+# model = PPO.load(f"{SAVE_DIR}/ppo_highway_grayscale_final")
+# best model
+model = PPO.load(f"{SAVE_DIR}/best_model")
 
 # evaluate over 500 episodes
-def evaluate_agent(model, make_env_fn, episodes=200):
+def evaluate_agent(model, make_env_fn, episodes=500):
     returns = []
     env = make_env_fn()
 
@@ -100,10 +135,8 @@ def evaluate_agent(model, make_env_fn, episodes=200):
     env.close()
     return returns
 
-
 print("\nRunning 500-episode deterministic evaluation...")
 returns = evaluate_agent(model, make_env)
-
 
 # violin plot
 plt.figure(figsize=(7, 6))
