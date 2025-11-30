@@ -1,16 +1,15 @@
 import os
-import glob
 from typing import Callable
 import gymnasium as gym
 from gymnasium.wrappers import RecordVideo
-import highway_env
+import highway_env # noqa: F401
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 
 
@@ -29,15 +28,27 @@ def make_env(rank: int):
             },
         )
         os.makedirs("./merge_grayscale_logs/", exist_ok=True)
-        monitor_file = f"./merge_grayscale_logs/monitor_{rank}.csv"
-        env = Monitor(env, filename=monitor_file, allow_early_resets=True)
+        env = Monitor(env, filename=f"./merge_grayscale_logs/monitor_{rank}.csv")
         return env
-
     return _init
 
 
 def linear_schedule(initial_value: float) -> Callable[[float], float]:
+    """
+    Linear learning rate schedule.
+
+    :param initial_value: Initial learning rate.
+    :return: schedule that computes
+      current learning rate depending on remaining progress
+    """
+
     def func(progress_remaining: float) -> float:
+        """
+        Progress will decrease from 1 (beginning) to 0.
+
+        :param progress_remaining:
+        :return: current learning rate
+        """
         return progress_remaining * initial_value
 
     return func
@@ -45,7 +56,6 @@ def linear_schedule(initial_value: float) -> Callable[[float], float]:
 
 if __name__ == "__main__":
     num_envs = 8
-
     train_env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
     eval_env = SubprocVecEnv([make_env(-1)])
 
@@ -68,46 +78,44 @@ if __name__ == "__main__":
     log_dir = "./merge_grayscale_logs/"
     os.makedirs(log_dir, exist_ok=True)
 
-    print("Starting PPO training on Merge-v0 (GrayscaleObservation, parallelized)...")
+    print("Training PPO 500k steps Merge-v0 GrayscaleObservation.")
     model.learn(total_timesteps=500_000, progress_bar=True)
     model.save(os.path.join(log_dir, "merge_grayscale"))
-    print("Training finished, model and normalization stats saved.")
+    print("Training finished.")
 
-    print("Merging parallel monitor logs...")
-    csv_files = glob.glob(os.path.join("./merge_grayscale_logs/", "monitor_*.csv"))
-    dfs = [pd.read_csv(f, skiprows=1) for f in csv_files if os.path.getsize(f) > 0]
-    data = pd.concat(dfs, ignore_index=True)
-    data = data.sort_values(by="t")
-    merged_csv_path = os.path.join("./merge_grayscale_logs/", "merged_monitor.csv")
-    data.to_csv(merged_csv_path, index=False)
 
-    try:
-        rewards = data["r"]
-        rolling_mean = rewards.rolling(window=200).mean()
+    all_curves = []
 
-        plt.figure(figsize=(9, 5))
-        plt.plot(rolling_mean, label="200-ep Moving Average")
-        plt.title("Learning Curve – Merge (GrayscaleObservation, Parallel)")
-        plt.xlabel("Episode")
-        plt.ylabel("Mean Episode Reward")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig("ID_7_merge_grayscale_learning_curve_tuned.png", dpi=300)
-        plt.show()
-    except Exception as e:
-        print(f"Could not plot learning curve: {e}")
+    for filename in os.listdir(log_dir):
+        if filename.startswith("monitor_") and not filename.startswith("monitor_-1"):
+            path = os.path.join(log_dir, filename)
+            df = pd.read_csv(path, skiprows=1)
+            df = df.sort_values(by="t")
+            roll = df["r"].rolling(300, min_periods=1).mean().to_numpy()
+            all_curves.append(roll)
 
-    print("\nEvaluating the tuned PPO model (500 episodes)...")
+    max_len = max(len(c) for c in all_curves)
+    padded = np.full((len(all_curves), max_len), np.nan)
+    for i, arr in enumerate(all_curves):
+        padded[i, : len(arr)] = arr
 
+    mean_curve = np.nanmean(padded, axis=0)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(mean_curve, label="Mean 300‑ep Moving Avg (across 8 envs)")
+    plt.title("Learning Curve - PPO - Merge Env (GrayscaleObservation)")
+    plt.xlabel("Episode")
+    plt.ylabel("Reward")
+    plt.savefig("ID_7_merge_grayscale_learning_curve_tuned.png")
+    plt.show()
+
+    print("\nEvaluating on 500 episodes")
     def evaluate_agent(model, env, episodes=500):
         rewards = []
-        for ep in tqdm(range(episodes)):
-            reset_out = env.reset()
-            obs = reset_out[0] if isinstance(reset_out, tuple) else reset_out
+        for _ in tqdm(range(episodes)):
+            obs = env.reset()                    
             done = False
-            total_reward = 0.0
-
+            total = 0.0
             while not done:
                 action, _ = model.predict(obs, deterministic=True)
                 step_out = env.step(action)
@@ -116,21 +124,15 @@ if __name__ == "__main__":
                 else:
                     obs, reward, terminated, truncated, info = step_out
                     done = terminated or truncated
-                total_reward += float(np.mean(reward))
+                total += float(np.mean(reward))
                 if isinstance(done, (list, np.ndarray)) and np.all(done):
                     done = True
-            rewards.append(total_reward)
+            rewards.append(total)
         return np.array(rewards)
 
-   
-    eval_env.training = False
-
     test_rewards = evaluate_agent(model, eval_env, episodes=500)
-
-    print("\nEvaluation summary over 500 episodes:")
+    print("\nSummary:")
     print(f"Mean reward: {np.mean(test_rewards):.3f}")
-    print(f"Std. dev.: {np.std(test_rewards):.3f}")
-    print(f"Win rate (>0 reward): {np.mean(test_rewards > 0) * 100:.1f}%")
 
     plt.figure(figsize=(6, 6))
     plt.violinplot(test_rewards, showmeans=True)
@@ -141,12 +143,9 @@ if __name__ == "__main__":
     plt.savefig("ID_8_merge_grayscale_performance_test_tuned.png", dpi=300)
     plt.show()
 
-    print("All done with training, evaluation, and plot generation.")
-
-    print("\nRecording demonstration videos of tuned PPO agent...")
+    print("\nRecording videos")
     video_folder = "videos/merge_grayscale/"
     os.makedirs(video_folder, exist_ok=True)
-
     video_env = gym.make(
         "merge-v0",
         render_mode="rgb_array",
@@ -160,30 +159,22 @@ if __name__ == "__main__":
             }
         },
     )
-
     video_env = RecordVideo(
         video_env,
         video_folder=video_folder,
         name_prefix="merge_grayscale_tuned_run",
-        episode_trigger=lambda episode_id: True,
+        episode_trigger=lambda eid: True,
     )
-    print("Video environment ready (Merge, GrayscaleObservation).")
-
     model = PPO.load(os.path.join(log_dir, "merge_grayscale"), env=video_env)
 
-    num_episodes = 5
-    for ep in tqdm(range(num_episodes)):
-        obs, info = video_env.reset()
-        done = truncated = False
-        total_reward = 0
-        while not (done or truncated):
+    for ep in tqdm(range(5)):
+        obs, _ = video_env.reset()
+        done = ter = tru = False
+        total = 0
+        while not (ter or tru or done):
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, truncated, info = video_env.step(action)
-            total_reward += reward
-        print(f"Episode {ep + 1}/{num_episodes} finished. Reward = {total_reward:.2f}")
+            obs, reward, ter, tru, _ = video_env.step(action)
+            total += reward
+        print(f"Episode {ep + 1}/5 Reward = {total:.2f}")
 
     video_env.close()
-    print(f"\n All demonstration videos saved to '{video_folder}'.")
-    print(
-        "\nTask 1 - Merge (GrayscaleObservation, Tuned) complete — environment unchanged."
-    )
