@@ -1,152 +1,179 @@
+import os
+from typing import Callable
 import gymnasium as gym
-import highway_env
-from stable_baselines3 import PPO
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
-from stable_baselines3.common.evaluation import evaluate_policy
-import pandas as pd
+from gymnasium.wrappers import RecordVideo
+import highway_env  # noqa: F401
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-import csv
-import os
+from tqdm import tqdm
 
-SAVE_DIR = "./highway_models"
-LOG_DIR = "./highway_logs"
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+from stable_baselines3.common.monitor import Monitor
 
-os.makedirs(SAVE_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
 
-import os
-os.makedirs(SAVE_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
+def make_env(rank: int):
+    def _init():
+        env = gym.make(
+            "highway-v0",
+            config={"observation": {"type": "GrayscaleObservation"}},
+        )
+        os.makedirs("./highway_grayscale_logs/", exist_ok=True)
+        env = Monitor(
+            env,
+            filename=f"./highway_grayscale_logs/monitor_{rank}.csv",
+            allow_early_resets=True,
+        )
+        return env
 
-config = {
-    "observation": {
-        "type": "GrayscaleObservation",
-        "observation_shape": (128, 64),
-        "stack_size": 4,
-        "weights": [0.2989, 0.5870, 0.1140],  # weights for RGB conversion
-        "scaling": 1.75,
-    },
-    "policy_frequency": 2,
-}
+    return _init
 
-def make_env():
-    env = gym.make("highway-v0", config=config, render_mode=None)
-    env = Monitor(env, filename=f"{LOG_DIR}/monitor.csv")
-    return env
+def linear_schedule(initial_value: float) -> Callable[[float], float]:
+    """
+    Linear learning rate schedule.
 
-# PPO needs a VecEnv
-venv = DummyVecEnv([make_env])
+    :param initial_value: Initial learning rate.
+    :return: schedule that computes
+      current learning rate depending on remaining progress
+    """
 
-# checkpoints to save model
-checkpoint_callback = CheckpointCallback(
-    save_freq=20_000, # save every 20k steps
-    save_path=SAVE_DIR,
-    name_prefix="ppo_checkpoint"
-)
+    def func(progress_remaining: float) -> float:
+        """
+        Progress will decrease from 1 (beginning) to 0.
 
-# keep the best model
-eval_env = DummyVecEnv([make_env])
-eval_callback = EvalCallback(
-    eval_env,
-    best_model_save_path=SAVE_DIR,
-    log_path=LOG_DIR,
-    eval_freq=25_000, # evaluate best model every 25k steps
-    deterministic=True,
-    render=False
-)
+        :param progress_remaining:
+        :return: current learning rate
+        """
+        return progress_remaining * initial_value
 
-# Create PPO model with cnnpolicy for image observations
-model = PPO(
-    "CnnPolicy",
-    venv,
-    learning_rate=2e-4, # went from 3e to 1e for smoother training
-    n_steps=2048, # want to run 4096 if possible
-    batch_size=256, # increased from 64 to 256 for CNN stability
-    n_epochs=5, # reduced from 10 to 5 bc training was a bit unstable
-    gamma=0.99,
-    gae_lambda=0.95,
-    clip_range=0.1, # from 0.2 -> 0.1 for smaller clip for image input
-    ent_coef=0.001, # lower to avoid over-exploration bc it's CNN
-    vf_coef=0.5,
-    max_grad_norm=0.5,
-    verbose=1,
-    tensorboard_log=f"{LOG_DIR}/tb/"
-)
+    return func
 
-# Train the model
-print("Starting training...")
-model.learn(
-    total_timesteps=200_000,
-    tb_log_name="run_highway_grayscale",
-    callback=[checkpoint_callback, eval_callback]
-)
 
-# save final model
-final_path = f"{SAVE_DIR}/ppo_highway_grayscale_final"
-model.save(final_path)
-print(f"Training done. Model saved to: {final_path}")
+if __name__ == "__main__":
+    num_envs = 8
 
-def plot_learning_curve(log_path, label="PPO"):
-    df = pd.read_csv(log_path, skiprows=1)   # Skip header comment
-    rewards = df["r"].values
+    train_env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+    eval_env = SubprocVecEnv([make_env(-1)])
 
-    window = 20
-    smoothed = pd.Series(rewards).rolling(window).mean()
+    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False)
+    eval_env = VecNormalize(eval_env, training=False, norm_obs=True, norm_reward=False)
 
-    plt.figure(figsize=(10, 5))
-    plt.plot(rewards, alpha=0.3, label="Raw episodic reward")
-    plt.plot(smoothed, linewidth=2, label=f"Smoothed (window={window})")
+    model = PPO(
+        policy="MlpPolicy",
+        env=train_env,
+        learning_rate=linear_schedule(3e-4),
+        n_steps=256,
+        batch_size=256,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        ent_coef=0.005,
+        clip_range=0.1,
+        verbose=1,
+        device="cpu",
+        tensorboard_log="./highway_grayscale_tensorboard/",
+    )
+
+    log_dir = "./highway_grayscale_logs/"
+    os.makedirs(log_dir, exist_ok=True)
+
+    print("Training PPO 500k steps Highway‑v0 grayscale.")
+    model.learn(total_timesteps=500_000, progress_bar=True)
+    model.save(os.path.join(log_dir, "highway_grayscale"))
+    train_env.save(os.path.join(log_dir, "vecnormalize.pkl"))
+    print("Training finished.")
+
+    all_curves = []
+
+    for filename in os.listdir(log_dir):
+        if filename.startswith("monitor_") and not filename.startswith("monitor_-1"):
+            path = os.path.join(log_dir, filename)
+            df = pd.read_csv(path, skiprows=1)
+            df = df.sort_values(by="t")
+            roll = df["r"].rolling(300, min_periods=1).mean().to_numpy()
+            all_curves.append(roll)
+
+    max_len = max(len(c) for c in all_curves)
+    padded = np.full((len(all_curves), max_len), np.nan)
+    for i, arr in enumerate(all_curves):
+        padded[i, : len(arr)] = arr
+
+    mean_curve = np.nanmean(padded, axis=0)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(mean_curve, label="Mean 300‑ep Moving Avg (across 8 envs)")
+    plt.title("Learning Curve - PPO - Highway Env (GrayscaleObservation)")
     plt.xlabel("Episode")
     plt.ylabel("Reward")
-    plt.title("Learning Curve — PPO (GrayscaleObservation)")
-    plt.legend()
-    plt.grid()
+    plt.savefig("ID_5_highway_grayscale_learning_curve_tuned.png")
     plt.show()
 
-# Plot learning curve
-plot_learning_curve(f"{LOG_DIR}/monitor.csv")
+    print("\nEvaluating on 500 episodes")
 
-from stable_baselines3 import PPO
-# final model
-# model = PPO.load(f"{SAVE_DIR}/ppo_highway_grayscale_final")
-# best model
-model = PPO.load(f"{SAVE_DIR}/best_model")
+    def evaluate_agent(model, env, episodes=500):
+        rewards = []
+        for _ in tqdm(range(episodes)):
+            reset_out = env.reset()
+            obs = reset_out[0] if isinstance(reset_out, tuple) else reset_out
+            done = False
+            total = 0.0
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                step_out = env.step(action)
+                if len(step_out) == 4:
+                    obs, reward, done, info = step_out
+                else:
+                    obs, reward, terminated, truncated, info = step_out
+                    done = terminated or truncated
+                total += float(np.mean(reward))
+                if isinstance(done, (list, np.ndarray)) and np.all(done):
+                    done = True
+            rewards.append(total)
+        return np.array(rewards)
 
-# evaluate over 500 episodes
-def evaluate_agent(model, make_env_fn, episodes=500):
-    returns = []
-    env = make_env_fn()
+    eval_env = VecNormalize.load(os.path.join(log_dir, "vecnormalize.pkl"), eval_env)
+    eval_env.training = False
 
-    for _ in range(episodes):
-        obs, info = env.reset()
+    test_rewards = evaluate_agent(model, eval_env, episodes=500)
+    print("\nSummary:")
+    print(f"Mean reward: {np.mean(test_rewards):.3f}")
+
+    plt.figure(figsize=(6, 6))
+    plt.violinplot(test_rewards, showmeans=True)
+    plt.title("Performance 500 episodes - PPO - Highway Env (GrayscaleObservation)")
+    plt.ylabel("Return")
+    plt.tight_layout()
+    plt.savefig("ID_6_highway_grayscale_performance_test_tuned.png")
+    plt.show()
+
+    print("\nRecording videos")
+    video_folder = "videos/highway_grayscale/"
+    os.makedirs(video_folder, exist_ok=True)
+
+    video_env = gym.make(
+        "highway-v0",
+        render_mode="rgb_array",
+        config={"observation": {"type": "GrayscaleObservation"}},
+    )
+
+    video_env = RecordVideo(
+        video_env,
+        video_folder=video_folder,
+        name_prefix="highway_grayscale_tuned_run",
+        episode_trigger=lambda eid: True,
+    )
+
+    model = PPO.load(os.path.join(log_dir, "highway_grayscale"), env=video_env)
+
+    for ep in tqdm(range(5)):
+        obs, info = video_env.reset()
         done = truncated = False
-        total_reward = 0
-
+        total = 0.0
         while not (done or truncated):
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, truncated, info = env.step(action)
-            total_reward += reward
+            obs, reward, done, truncated, info = video_env.step(action)
+            total += reward
+        print(f"Episode {ep + 1}/5 Reward = {total:.2f}")
 
-        returns.append(total_reward)
-
-    env.close()
-    return returns
-
-print("\nRunning 500-episode deterministic evaluation...")
-returns = evaluate_agent(model, make_env)
-
-# violin plot
-plt.figure(figsize=(7, 6))
-plt.violinplot([returns], showmeans=True, showextrema=True)
-plt.xticks([1], ["PPO"])
-plt.ylabel("Episodic Return")
-plt.title("Performance of PPO (500 deterministic episodes)")
-plt.grid(axis="y")
-plt.show()
-
-print(f"Mean return over 500 episodes: {np.mean(returns):.2f}")
-print(f"Std return: {np.std(returns):.2f}")
-
+    video_env.close()
