@@ -78,8 +78,8 @@ if __name__ == "__main__":
     log_dir = "./highway_grayscale_logs/"
     os.makedirs(log_dir, exist_ok=True)
 
-    print("Training PPO 500k steps Highway‑v0 grayscale.")
-    model.learn(total_timesteps=500_000, progress_bar=True)
+    print("Training PPO 200k steps Highway‑v0 grayscale.")
+    model.learn(total_timesteps=200_000, progress_bar=True)
     model.save(os.path.join(log_dir, "highway_grayscale"))
     train_env.save(os.path.join(log_dir, "vecnormalize.pkl"))
     print("Training finished.")
@@ -106,7 +106,7 @@ if __name__ == "__main__":
     plt.title("Learning Curve - PPO - Highway Env (GrayscaleObservation)")
     plt.xlabel("Episode")
     plt.ylabel("Reward")
-    plt.savefig("ID_5_highway_grayscale_learning_curve_tuned.png")
+    plt.savefig("highway_grayscale_learning_curve.png")
     plt.show()
 
     print("\nEvaluating on 500 episodes")
@@ -144,7 +144,7 @@ if __name__ == "__main__":
     plt.title("Performance 500 episodes - PPO - Highway Env (GrayscaleObservation)")
     plt.ylabel("Return")
     plt.tight_layout()
-    plt.savefig("ID_6_highway_grayscale_performance_test_tuned.png")
+    plt.savefig("highway_grayscale_performance_test.png")
     plt.show()
 
     print("\nRecording videos")
