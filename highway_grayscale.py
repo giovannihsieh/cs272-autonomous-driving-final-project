@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 
 
@@ -56,22 +56,22 @@ def linear_schedule(initial_value: float) -> Callable[[float], float]:
 
 if __name__ == "__main__":
     num_envs = 8
-    train_env = DummyVecEnv([make_env(i) for i in range(num_envs)])
-    eval_env = DummyVecEnv([make_env(-1)])
+    train_env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+    eval_env = SubprocVecEnv([make_env(-1)])
 
     model = PPO(
         policy="CnnPolicy",
         env=train_env,
         learning_rate=linear_schedule(3e-4),
-        n_steps=1024, #increase from 256 to 1024 for more stable learning
-        batch_size=512, #increase from 256
+        n_steps=256,
+        batch_size=256,
         n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
         ent_coef=0.005,
         clip_range=0.1,
         verbose=1,
-        device="cuda", # use gpu instead of cpu
+        device="cpu",
         tensorboard_log="./highway_grayscale_tensorboard/",
     )
 
