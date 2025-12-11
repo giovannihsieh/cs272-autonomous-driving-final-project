@@ -1,7 +1,7 @@
 """
-Training script for Emergency Vehicle Yielding Environment with LiDAR Observation
-ID 13: Learning curve for custom environment
-ID 14: Performance test for custom environment
+Training script for Emergency Vehicle Yielding Environment with Grayscale Observation
+ID 13: Learning curve for custom environment (Grayscale variant)
+ID 14: Performance test for custom environment (Grayscale variant)
 
 Based on PPO implementation from stable-baselines3
 https://github.com/DLR-RM/stable-baselines3
@@ -24,17 +24,20 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-SAVE_DIR = "./custom_emergency_models_lidar"
-LOG_DIR = "./custom_emergency_logs_lidar"
+SAVE_DIR = "./custom_emergency_models_grayscale"
+LOG_DIR = "./custom_emergency_logs_grayscale"
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Configure environment with LiDAR observation
+# Configure environment with Grayscale observation
 config = {
     "observation": {
-        "type": "LidarObservation",
-        "cells": 64,
+        "type": "GrayscaleObservation",
+        "observation_shape": (128, 64),
+        "stack_size": 4,
+        "weights": [0.2989, 0.5870, 0.1140],  # RGB to grayscale weights
+        "scaling": 1.75,
     },
     "action": {
         "type": "DiscreteMetaAction",
@@ -43,7 +46,7 @@ config = {
 
 def make_env():
     env = gym.make("EmergencyHighwayEnv-v0", config=config, render_mode=None)
-    env = Monitor(env, filename=f"{LOG_DIR}/monitor_emergency_lidar.csv")
+    env = Monitor(env, filename=f"{LOG_DIR}/monitor_emergency_grayscale.csv")
     return env
 
 # Create vectorized environment
@@ -53,7 +56,7 @@ venv = DummyVecEnv([make_env])
 checkpoint_callback = CheckpointCallback(
     save_freq=20_000,
     save_path=SAVE_DIR,
-    name_prefix="ppo_emergency_lidar_checkpoint"
+    name_prefix="ppo_emergency_grayscale_checkpoint"
 )
 
 # Evaluation callback to save best model
@@ -67,11 +70,11 @@ eval_callback = EvalCallback(
     render=False
 )
 
-# Create PPO model with MlpPolicy for LiDAR
+# Create PPO model with CnnPolicy for Grayscale images
 model = PPO(
-    "MlpPolicy",
+    "CnnPolicy",
     venv,
-    learning_rate=2e-4,
+    learning_rate=1e-4,  # Lower learning rate for CNN
     n_steps=2048,
     batch_size=256,
     n_epochs=5,
@@ -86,16 +89,16 @@ model = PPO(
 )
 
 # Train the model
-print("Starting training for Emergency Vehicle Yielding Environment (LiDAR)...")
+print("Starting training for Emergency Vehicle Yielding Environment (Grayscale)...")
 print("Training for ~4000 episodes (500,000 timesteps)...")
 model.learn(
     total_timesteps=500_000,
-    tb_log_name="run_emergency_lidar",
+    tb_log_name="run_emergency_grayscale",
     callback=[checkpoint_callback, eval_callback]
 )
 
 # Save final model
-final_path = f"{SAVE_DIR}/ppo_emergency_lidar_final"
+final_path = f"{SAVE_DIR}/ppo_emergency_grayscale_final"
 model.save(final_path)
 print(f"Training done. Model saved to: {final_path}")
 
@@ -111,7 +114,7 @@ def plot_learning_curve(log_path, output_path):
     plt.plot(smoothed, linewidth=2, label=f"Smoothed (window={window})", color='orange')
     plt.xlabel("Episode")
     plt.ylabel("Reward")
-    plt.title("ID 13: Learning Curve - Emergency Yielding (LiDAR Observation)")
+    plt.title("ID 13: Learning Curve - Emergency Yielding (Grayscale Observation)")
     plt.legend()
     plt.grid()
     plt.tight_layout()
@@ -119,8 +122,8 @@ def plot_learning_curve(log_path, output_path):
     print(f"Learning curve saved to: {output_path}")
     plt.close()
 
-learning_curve_path = f"{LOG_DIR}/ID_13_emergency_lidar_learning_curve.png"
-plot_learning_curve(f"{LOG_DIR}/monitor_emergency_lidar.csv", learning_curve_path)
+learning_curve_path = f"{LOG_DIR}/ID_13_emergency_grayscale_learning_curve.png"
+plot_learning_curve(f"{LOG_DIR}/monitor_emergency_grayscale.csv", learning_curve_path)
 
 # Load best model for evaluation
 print("\nLoading best model for evaluation...")
@@ -155,13 +158,13 @@ returns = evaluate_agent(model, make_env)
 # Violin plot for performance test (ID 14)
 plt.figure(figsize=(7, 6))
 parts = plt.violinplot([returns], showmeans=True, showextrema=True)
-plt.xticks([1], ["PPO (LiDAR)"])
+plt.xticks([1], ["PPO (Grayscale)"])
 plt.ylabel("Episodic Return")
-plt.title("ID 14: Performance Test - Emergency Yielding (LiDAR, 500 episodes)")
+plt.title("ID 14: Performance Test - Emergency Yielding (Grayscale, 500 episodes)")
 plt.grid(axis="y")
 plt.tight_layout()
 
-performance_path = f"{LOG_DIR}/ID_14_emergency_lidar_performance_test.png"
+performance_path = f"{LOG_DIR}/ID_14_emergency_grayscale_performance_test.png"
 plt.savefig(performance_path, dpi=300)
 print(f"Performance test plot saved to: {performance_path}")
 plt.close()
