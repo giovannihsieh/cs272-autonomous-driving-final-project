@@ -31,11 +31,8 @@ LEARNING_CURVE_TITLE = "Learning Curve - PPO - Parallel Parking"
 PERFORMANCE_VIOLIN_PATH = "parallel_parking_performance.png"
 PERFORMANCE_VIOLIN_TITLE = "Performance (500 Episodes) - PPO - Parallel Parking"
 
+# limit steering and acceleration to try to prevent early crashes so model can learn
 class DynamicSafeActionWrapper(gym.ActionWrapper):
-    """
-    Clips steering and acceleration initially to prevent early crashes,
-    then gradually allows full control as the episode progresses.
-    """
     def __init__(self, env, max_steer=0.1, max_accel=0.2, safe_steps=10):
         super().__init__(env)
         self.max_steer = max_steer
@@ -57,6 +54,7 @@ class DynamicSafeActionWrapper(gym.ActionWrapper):
         # Clip the action
         return np.clip(action, [-steer_limit, -accel_limit], [steer_limit, accel_limit])
 
+# increase reward when closer to goal, subtract when move further
 class DistanceShapingWrapper(gym.Wrapper):
     def __init__(self, env, k=1.0, gamma=0.99):
         super().__init__(env)
@@ -83,6 +81,7 @@ class DistanceShapingWrapper(gym.Wrapper):
         d = np.linalg.norm(p - env.goal_position)
         return -self.k * d
 
+# try to prevent crashes
 class SurvivalBonusWrapper(gym.RewardWrapper):
     def __init__(self, env, per_step_bonus=0.1):
         super().__init__(env)
